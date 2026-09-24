@@ -1,0 +1,96 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: claimsettler
+      POSTGRES_USER: claimsettler
+      POSTGRES_PASSWORD: claimsettler
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U claimsettler"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  compliance_agent:
+    build: .
+    command: python -m claimsettler.mcp_servers.compliance_agent.server
+    environment: &common_env
+      DATABASE_URL: postgresql+asyncpg://claimsettler:claimsettler@postgres:5432/claimsettler
+      MCP_KMA_URL: http://kma:8100/mcp
+      MCP_FRAUD_AGENT_URL: http://fraud_agent:8101/mcp
+      MCP_COMPLIANCE_AGENT_URL: http://compliance_agent:8102/mcp
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-fake}
+      VECTOR_STORE: ${VECTOR_STORE:-fake}
+      RERANKER: ${RERANKER:-fake}
+      LLM_PROVIDER: ${LLM_PROVIDER:-fake}
+      PII_DETECTOR: ${PII_DETECTOR:-presidio}
+      PINECONE_API_KEY: ${PINECONE_API_KEY:-}
+      PINECONE_INDEX: ${PINECONE_INDEX:-claimsettler-kma}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-5}
+      PORT: "8102"
+    ports:
+      - "8102:8102"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  kma:
+    build: .
+    command: python -m claimsettler.mcp_servers.kma.server
+    environment:
+      <<: *common_env
+      PORT: "8100"
+    ports:
+      - "8100:8100"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  fraud_agent:
+    build: .
+    command: python -m claimsettler.mcp_servers.fraud_agent.server
+    environment:
+      <<: *common_env
+      PORT: "8101"
+    ports:
+      - "8101:8101"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    build: .
+    command: uvicorn claimsettler.api.main:app --host 0.0.0.0 --port 8000
+    environment:
+      <<: *common_env
+      CORS_ALLOW_ORIGINS: http://localhost:3000
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kma:
+        condition: service_started
+      fraud_agent:
+        condition: service_started
+      compliance_agent:
+        condition: service_started
+
+  web:
+    build:
+      context: ./web
+    environment:
+      API_BASE_URL: http://api:8000
+      NEXT_PUBLIC_API_BASE_URL: /api/backend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+volumes:
+  postgres_data:
